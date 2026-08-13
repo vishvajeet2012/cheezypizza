@@ -4,13 +4,13 @@ import { Redis, getRedisClient } from './redisClient'
 import { generateShortSlug, generateLongSlug } from './slugs'
 import crypto from 'crypto'
 import { z } from 'zod'
+import {
+  MongoChannelRepo,
+  isMongoChannelConfigured,
+} from './mongoChannel'
+import type { Channel, ChannelRepo } from './channelTypes'
 
-export type Channel = {
-  secret?: string
-  longSlug: string
-  shortSlug: string
-  uploaderPeerID: string
-}
+export type { Channel, ChannelRepo } from './channelTypes'
 
 const ChannelSchema = z.object({
   secret: z.string().optional(),
@@ -18,13 +18,6 @@ const ChannelSchema = z.object({
   shortSlug: z.string(),
   uploaderPeerID: z.string(),
 })
-
-export interface ChannelRepo {
-  createChannel(uploaderPeerID: string, ttl?: number): Promise<Channel>
-  fetchChannel(slug: string): Promise<Channel | null>
-  renewChannel(slug: string, secret: string, ttl?: number): Promise<boolean>
-  destroyChannel(slug: string): Promise<void>
-}
 
 function getShortSlugKey(shortSlug: string): string {
   return `short:${shortSlug}`
@@ -85,13 +78,11 @@ export class MemoryChannelRepo implements ChannelRepo {
   private timeouts: Map<string, NodeJS.Timeout> = new Map()
 
   private setChannelTimeout(slug: string, ttl: number) {
-    // Clear any existing timeout
     const existingTimeout = this.timeouts.get(slug)
     if (existingTimeout) {
       clearTimeout(existingTimeout)
     }
 
-    // Set new timeout to remove channel when expired
     const timeout = setTimeout(() => {
       this.channels.delete(slug)
       this.timeouts.delete(slug)
@@ -190,7 +181,6 @@ export class MemoryChannelRepo implements ChannelRepo {
     const shortKey = getShortSlugKey(channel.shortSlug)
     const longKey = getLongSlugKey(channel.longSlug)
 
-    // Clear timeouts
     const shortTimeout = this.timeouts.get(shortKey)
     if (shortTimeout) {
       clearTimeout(shortTimeout)
@@ -296,7 +286,11 @@ declare global {
 
 export function getOrCreateChannelRepo(): ChannelRepo {
   if (!global._channelRepo) {
-    if (process.env.REDIS_URL) {
+    // Prefer Mongo (ChunkChat / any Mongo) over Redis — no separate Redis needed
+    if (isMongoChannelConfigured()) {
+      global._channelRepo = new MongoChannelRepo()
+      console.log('[ChannelRepo] Using MongoDB storage (Redis not required)')
+    } else if (process.env.REDIS_URL) {
       global._channelRepo = new RedisChannelRepo()
       console.log('[ChannelRepo] Using Redis storage')
     } else {
